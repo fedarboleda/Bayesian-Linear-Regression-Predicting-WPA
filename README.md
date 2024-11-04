@@ -1,0 +1,1 @@
+Bayesian linear regression model to predict a player's win probability added (WPA) for the 2023 MLB season. A Gibbs sampler is used to approximate the posterior distributions of the model coefficients. 
