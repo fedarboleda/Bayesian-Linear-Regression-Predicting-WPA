@@ -1,0 +1,178 @@
+---
+title: "Bayesian linear regression analysis of important covariates in predicting MLB win probability added"
+author: "Federico Arboleda"
+date: "May 3, 2024"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r turn-off-scientific-notation, echo = FALSE}
+options(scipen = 999)
+```
+
+```{r load-packages-and-data, message = FALSE, warning = FALSE, echo = FALSE}
+library(tidyverse)
+library(latex2exp)
+library(patchwork)
+library(tidymodels)
+library(mvtnorm)
+library(coda)
+library(knitr)
+batted_ball_data_2023 <- read.csv("2023_BattedBall_Data.csv")
+```
+
+```{r data-cleaning, echo = FALSE, warning = FALSE}
+names(batted_ball_data_2023) <- batted_ball_data_2023[1, ]
+batted_ball_data_2023 <- batted_ball_data_2023[-c(1, 466), ]
+names <- batted_ball_data_2023[, 2]
+teams <- batted_ball_data_2023[, 4]
+batted_ball_data_2023[] <- lapply(batted_ball_data_2023, function(x) as.numeric(gsub("%", "", x)))
+
+batted_ball_data_2023$Name <- names
+batted_ball_data_2023$Tm <- teams
+
+batted_ball_data_2023[is.na(batted_ball_data_2023)] <- 0
+```
+
+# Introduction and Data
+Over the last few decades in Major League Baseball, old platitudes and cliches about hitting the ball to the opposite field, putting the ball on the ground, and prioritizing contact over power, have taken a back seat to new attitudes encouraging swinging away often, taking as many walks as hits, and trying to launch the ball into the seats whenever a player can. The recent technological revolution in baseball has challenged existing, and often stubborn, attitudes about what makes a good player, and what teams should prioritize in their player development, trades, and free agency signings. As teams have become more and more informed over time, the competitive advantage becomes smaller for those who were first to the baseball information revolution. While teams are aware now more than ever about what general archetypes of players they should target and try to develop, it is imperative for these teams to know which specific metrics are related to winning and success for the franchise. This statistical analysis thus tries to answer: what baseball offensive metrics have the strongest statistical relationships with team success?  
+
+The data used in this analysis comes from the [2023 MLB Advanced Batting page from Baseball Reference](https://www.baseball-reference.com/leagues/majors/2023-advanced-batting.shtml), under the "Player Advanced Batting" table. In this data set, there are 467 rows and 27 columns, with each row representing a player from the 2023 MLB season and the columns consisting of key hitting metrics for the players. The proportion values in the data set were originally character variables that had "%" at the end of their character, so these had to be changed by removing the % sign using gsub() and changing them to numeric vectors. Furthermore, missing values in the data set were changed to 0, since having missing hitting rate statistics but having non-zero plate appearances (as all the players in the data set do) is the same as having 0 in these statistics (this just seems to be an error in the data). 
+
+The response variable used in this analysis is cumulative win probability added throughout a whole season (`WPA`). Every play a player takes part in changes their team's probability of winning that game, and the WPA used in this analysis is the cumulative sum over a whole season for a player (and thus can take on any real value). The predictor variables used in this model are home runs per 100 plate appearances (`HR%`), strikeouts per 100 (`SO%`), walks per 100 (`BB%`), hard hit balls per 100 (`HardH%`, the proportion of balls hit over 95 mph), pulled balls per 100 (`Pull%`, the proportion of balls hit to the hitter's pull side), and fly balls per 100 (`FB%`). As these metrics signify the rate at which players experience outcomes which may coincide with the success of their team, they appear to be intriguing covariates in predicting a players' WPA.
+
+# Methodology
+The model used in this analysis is a Bayesian linear regression model. In this model, I use a multivariate normal likelihood for the response variable (WPA), and semi-conjugate prior distributions on the model parameters: a multivariate normal prior on the regression coefficients ($\beta$), and an inverse-gamma prior on $\sigma^2$. The priors chosen for the model are diffuse, with the $\beta$ prior having mean 0 and a covariance matrix of 1000I, and the $\sigma^2$ prior having parameters of 1 and 10. These diffuse priors were chosen because little is known about the relationship between the predictors and the response variable WPA, and we do not want to place much prior knowledge about the effects each predictor has on the response in terms of the regression coefficients. The full model specification is shown below, where $y$ is the response variable, $X$ is the design matrix of regressors, $I$ is the identity matrix, and $\beta$ is a vector of model regression coefficients: 
+$$y \mid X, \beta, \sigma^2 \sim MVN(X \beta,\,\sigma^{2}I)$$
+$$\beta \sim MVN(0, 1000I) $$
+$$\sigma^2 \sim invgamma(1, 10) $$
+$$\epsilon_i \sim N(0, \sigma^2)$$
+Under this model specification, the priors on $\beta$ and $\sigma^2$ are conjugate to the full conditionals $P(\beta \mid y, X, \sigma^2)$ and $P(\sigma^2 \mid y, X, \beta)$, but the joint distribution $P(\beta, \sigma^2)$ is not conjugate to the joint posterior for the parameters, $P(\beta, \sigma^2 \mid y, X)$. Therefore, a Gibbs sampler with 10000 draws is implemented for this model to draw samples from the full conditionals $P(\beta \mid y, X, \sigma^2)$ and $P(\sigma^2 \mid y, X, \beta)$ to generate a Markov chain Monte Carlo approximation for $P(\beta, \sigma^2 \mid y, X)$. This approach gives us a distribution for each coefficient of the regression model and for $\sigma^2$. For the strength of the model, we look to see that the regression coefficients have achieved a high level of mixing through parameter space, and that they have converged at the end of the chain. We also want a high effective sample size from these chains, to demonstrate that there are a large number of effectively independent samples in the Markov chain even if the draws are dependent on each other, so that the posterior estimates for the regression coefficients are more accurate. 
+
+This model has multiple key assumptions. As we saw above, we assume the errors to be independent and to be normally distributed with mean 0 and variance $\sigma^2$ across all the errors. Furthermore, we assume that the likelihood for the response variable, $P(y \mid X, \beta, \sigma^2)$, is reasonable represented by the multivariate normal, and that there is a linear relationship between the response and predictor variables. Furthermore, it is assumed that the unknown parameters in the model are independent (i.e. $P(\beta, \sigma^2)$ = $P(\beta)P(\sigma^2)$). In the Gibbs sampler, the draws from the full conditionals from each of the parameters are assumed to be dependent on what was drawn in the step before in the Markov chain, but the hope is that there are a large number of effectively independent samples in the chains. Finally, while not technically "assumptions" as they are based on prior knowledge, the prior distributions placed on the regression coefficients and on $\sigma^2$ assume that the coefficients can take on any value on the real line, while $\sigma^2$ can only take on positive values, both are which are necessary for the model specification as defined above. 
+
+A Bayesian linear regression approach was chosen because, when trying to analyze the "importance" and relationship that a specific batted-ball variable has on win probability added in terms of the regression coefficient, having a distribution for that coefficient rather than just a point estimate allows for a study of the mean, variance, median, quantiles, mode, and posterior probabilities for these coefficients. Thus, a Bayesian approach provides more information about the coefficients than a frequentist approach and gives more insight to teams into how "important" a certain statistic is for a hitter in predicting win probability added. 
+
+# Results
+
+```{r get-X-and-y, echo = FALSE}
+X <- batted_ball_data_2023 |>
+  select(`HR%`, `SO%`, `BB%`, `HardH%`, `Pull%`, `FB%`) |>
+  mutate(one = rep(1, nrow(batted_ball_data_2023))) |>
+  relocate(one) |>
+  as.matrix()
+
+y <- batted_ball_data_2023 |>
+  select(WPA) |>
+  as.matrix()
+```
+
+```{r gibbs-sampler, echo = FALSE}
+set.seed(111)
+p <- 6
+Sigma0 <- 1000 * diag(rep(1, p + 1))
+b0 <- rep(0, p + 1)
+nu0 <- 2
+sigma02 <- 10
+n <- nrow(y)
+
+gamma <- 1 / var(batted_ball_data_2023$WPA)
+
+SigmaInv <- solve(Sigma0)
+X2 <- t(X) %*% X
+Xy <- t(X) %*% y
+SIB0 <- SigmaInv %*% b0
+a <- (nu0 + n) / 2
+nu0s02 <- nu0 * sigma02
+
+BETA <- NULL
+GAMMA <- NULL
+
+S <- 10000
+for (s in 1:S) {
+  V <- solve(SigmaInv + (gamma * X2))
+  m <- V %*% (Xy * gamma)
+  beta <- rmvnorm(1, mean = m, sigma = V)
+
+
+  SSR1 <- (y - (X %*% t(beta)))
+  SSRB <- t(SSR1) %*% SSR1
+  gamma <- rgamma(1, a, ((nu0s02 + SSRB) / 2))
+
+
+  GAMMA <- c(GAMMA, gamma)
+  BETA <- rbind(BETA, beta)
+}
+
+
+posteriorMean <- apply(BETA, 2, mean)
+posteriorVar <- apply(BETA, 2, var)
+posteriorCI <- apply(BETA, 2, function(x) quantile(x, c(0.025, 0.975)))
+effectiveSamples <- effectiveSize(BETA)
+posteriorData <- as.data.frame(rbind(posteriorMean, posteriorVar, posteriorCI,
+                                     effectiveSamples))
+rownames(posteriorData) <- c("Posterior mean", "Posterior variance", "2.5% posterior quantile",
+                             "97.5% posterior quantile", "Effective sample size")
+```
+
+```{r results-table, echo = FALSE}
+kable(as.data.frame(head(BETA, 10)), 
+      caption = "First 10 posterior estimates for each regression coefficient Markov chain", 
+      col.names = c("(Intercept)", "HR%", "SO%", "BB%", "HardH%", "Pull%", "FB%"), 
+      digits = 3)
+
+kable(posteriorData, 
+      caption = "Key results from posterior estimates of regression coefficients",
+      col.names = c("(Intercept)", "HR%", "SO%", "BB%", "HardH%", "Pull%", "FB%"), 
+      digits = 3)
+```
+For each of the predictor variables in the model, the coefficient can be interpreted as how much the win probability added over a full season for a player is expected to change when there is an increase of one of that type of batted ball event per 100 plate appearances, holding the other predictors constant. Given that the output for the regression coefficients are distributions under this analysis, the posterior mean of each coefficient, the variance, the 95% posterior confidence interval, and the number of effectively independent samples are shown above. 
+
+From this model, we see that the coefficient for the home run rate per 100 (`HR%`) has by far the highest posterior mean at 0.026. That is, for every increase in 1 home run per 100 plate appearances, the cumulative win probability added for a player is expected to increase by 0.026, on average, holding all else constant, when considering the posterior mean. The posterior mean for the coefficient for walk rate per 100 (`BB%`) is also high, at 0.012. Thus, for every increase in 1 walk per 100 plate appearances, the cumulative win probability added for a player is expected to increase by 0.012, on average, holding all else constant, when considering the posterior mean. The posterior means the coefficients for hard hit rate, pull rate, and fly ball rate are all near 0, while strikeout rate (`SO%`) was the only one with a negative relationship with win probability added: for every increase in 1 strikeout per 100 plate appearances, the cumulative win probability added for a player is expected to decrease by 0.007, on average, holding all else constant, when considering the posterior mean. 
+
+Looking at the variances and 95% posterior confidence intervals, it can be seen that the posterior distribution for the coefficient for home run rate reached up to 0.040 at the 97.5% quantile, and still having a coefficient of 0.012 with win probability added at the 2.5% posterior quantile, further demonstrating the strong positive relationship between home run rate and win probability added for a player. The variances of all the coefficient posterior distributions are very small (around 0), suggesting that these distributions are concentrated near their means. The effective sample sizes for each of the coefficient posterior distributions are all near, at, or even above the number of samples taken in the Markov chain, 10000. In particular, the effective sample size for the posterior distribution of the regression coefficient for fly ball rate is 10596.747, suggesting negative autocorrelation in that particular chain. Nevertheless, the high effective sample sizes for the coefficients suggest that essentially all the samples in the posterior approximation are effectively independent. 
+
+```{r hr-hist, echo = FALSE}
+hist(BETA[, 2], main = "Posterior approximate distribution for 
+     HR% model coefficient", 
+     xlab = TeX("\\beta_1"))
+```
+The posterior mean results for home runs and strikeouts make sense intuitively: a home run is statistically the best thing you can do on a baseball field to score runs efficiently, while strikeouts are just outs with the added disadvantage that they cannot advance base-runners the way a ground ball or fly ball can. It was somewhat surprising to see that walk rate had such a strong positive relationship with win probability added, since walks are incremental (only one base at a time) and cannot advance previous baserunners multiple bases. It was also surprising to see that hard hit rate did not have much of a relationship at all with win probability added, with a posterior mean coefficient of 0.002 (evaluated at the posterior mean, for every increase of 1 hard hit ball per 100, the win probability added is expected to increase by 0.002, holding all else constant). While hitting the ball hard generally leads to better results (with more extra base hits and more opportunities for runners to advance), the relatively weak relationship between hard hit rate and win probability added could be a result of hitters hitting the ball hard but right at fielders for outs. 
+
+```{r hr-traceplot, echo = FALSE}
+beta_df <- as.data.frame(BETA)
+beta_df |>
+  ggplot(aes(x = seq(1, nrow(beta_df)), y = V2)) +
+  geom_line() +
+  theme_bw() +
+  labs(y = TeX("\\beta_1"),
+       x = "Iteration",
+       title = "Traceplot of 10000 Gibbs samples for regression coefficient for HR%")
+```
+Evaluating the traceplot for the posterior samples of the regression coefficient for home run rate, it can be observed that the chain achieves a strong degree of mixing, as it visits much of the parameter space between 0 and 0.05, and thus the regions of high probability for the posterior distribution. Thus, this chain does a good job of exploring a wide range of potential values for the regression coefficient. Furthermore, the chain appears to have converged after 10000 samples, since the chain seems to have settled into a pattern and does not deviate from the center of the plot between the first and last samples. These features of posterior distribution suggest that there are a high number of effectively independent samples in this chain, and thus the Markov chain approximates the actual posterior distribution of the coefficient well.  
+
+```{r walk-traceplot, echo = FALSE}
+beta_df |>
+  ggplot(aes(x = seq(1, nrow(beta_df)), y = V4)) +
+  geom_line() +
+  theme_bw() +
+  labs(y = TeX("\\beta_3"),
+       x = "Iteration",
+       title = "Traceplot of 10000 Gibbs samples for regression coefficient for BB%")
+```
+Similarly, the traceplot for the posterior samples of the regression coefficient for walk rate mixes well throughout parameter space, exploring the majority of the space between 0 and 0.02. This chain, too, has converged, as samples from near the beginning of the chain look similar to the ones near the end and the traceplot appears so have a homogeneous pattern through the 10000 samples. Therefore, much like the posterior distribution for the home run rate coefficient, there are a high number of effectively independent samples in the walk rate chain, and the Markov chain approximates the actual posterior distribution of the coefficient strongly with a large number of effectively independent samples.  
+
+# Discussion
+This analysis, using a Bayesian linear regression framework, revealed a strong positive relationship between home run rate and win probability added, a somewhat weaker but still-strong statistical relationship between walk rate and win probability added, little relationship at all between each of fly ball rate, pull rate, and hard hit rate versus win probability added, and a negative relationship between strikeout rate and win probability added. Overall, the results for the regression coefficient for home run rate align with the expectation that more home runs are generally aligned with more wins, and are more helpful to the team than any other offensive outcome. The advice thus seems simple, but it begs repeating: hitting home runs is good, and trying to hit them does not make one a "selfish" player. Furthermore, the strong relationship between walk rate and win probability added was somewhat surprising given the limited nature of walks, but it also aligns with baseball's recent attitudes that favor high walk rates in player scouting. Finally, the negative relationship between strikeout rate and win probability added was expected, but smaller than what was anticipated. Given that swinging hard in search of harder contact can often lead to higher strikeouts, it is possible that MLB front offices are willing to accept this trade-off for more high-powered offenses. 
+
+The data used for this model was taken entirely from the 2023 MLB season. While this was done to make the data relevant to recent MLB offensive strategies and the current run scoring environment, it would have been nice to use a larger sample, perhaps for the last 3 seasons (2021-2023), to strengthen the analysis. Furthermore, while win probability added is highly driven by offensive output, defense does play a small role in shifting win probabilities for teams. Defensive metrics are unfortunately quite unreliable, but it would have been intriguing to include some defensive statistics to the model to evaluate the relationship they have with win probability added for a player. This would give more insight to players on what they should practice more intently on defense, as well as informing MLB front offices about what types of players they should target in trades, free agency, and drafts. 
+
+In the future, adding defensive metrics to the model would help make the model more "inclusive" of a player's skillset and would be more informative for player evaluators on what metrics are strongly related with win probability added. Furthermore, while the main goal of this study is to focus on the individual features of the posterior distributions of the regression coefficients to highlight "important" metrics in predicting win probability added, future work on the predictive power of the model (using either the prior predictive or posterior predictive distributions of the regression coefficients) would further illuminate the effectiveness of the model, while helping us evaluate whether the prior distributions selected for the model parameters are appropriate. 
+
+# References
+“2023 Major League Baseball Advanced Batting.”\
+*Baseball Reference*, Baseball Reference, 2023,
+\
+https://www.baseball-reference.com/leagues/majors/2023-advanced-batting.shtml.
+
